@@ -42,8 +42,6 @@ def bigrams(text: str) -> set[str]:
     return {s[i:i + 2] for i in range(len(s) - 1)} if len(s) > 1 else ({s} if s else set())
 
 
-
-
 # RAG 엔진을 대신하는 임시 클래스
 class StubEngine:
     name = "stub"
