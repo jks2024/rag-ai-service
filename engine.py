@@ -29,6 +29,20 @@ def chunk_texts(splitter: RecursiveCharacterTextSplitter, title: str, content: s
         pieces = [""]
     return [f"제목: {title}\n{p}".strip() for p in pieces]
 
+# 검색 결과에서 본문만 추출
+def body_of(text: str) -> str:
+    """청크 앞의 '제목:' 줄을 뗀 본문 (출처 미리보기용)."""
+    lines = text.split("\n", 1)
+    return lines[1].strip() if len(lines) > 1 and lines[0].startswith("제목:") else text.strip()
+
+# 글자를 두 갰기 묶기: 실제 임베딩 모델을 사용하는 대인, 문자열을 2-gram으로 변환
+def bigrams(text: str) -> set[str]:
+    """글자 2개 묶음. 공백·기호는 빼고 소문자로."""
+    s = re.sub(r"[^0-9a-zA-Z가-힣]", "", text.lower())
+    return {s[i:i + 2] for i in range(len(s) - 1)} if len(s) > 1 else ({s} if s else set())
+
+
+
 
 # RAG 엔진을 대신하는 임시 클래스
 class StubEngine:
