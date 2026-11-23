@@ -1,5 +1,7 @@
 import re
 from dataclasses import dataclass
+from langchain_core.output_parsers import StrOutputParser  # LLM이 반환한 메시지 객체에서 답변 텍스트만 추출
+from langchain_core.prompts import ChatPromptTemplate      # LLM에게 전달할 질문과 지시문을 정해진 형식으로 구성
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from settings import Settings
 
@@ -11,8 +13,7 @@ class Chunk:
     text: str
     score: float = 0.0
 
-# 긴 게시글을 나누는 함수 (청킹), chunk_size=500, chunk_overlap=80
-# RecursiveCharacterTextSplitter: LangChain에서 제공하는 텍스트 분할 도구
+# ───────────────────────── 공통 도우미 ─────────────────────────
 def make_splitter(settings: Settings) -> RecursiveCharacterTextSplitter:
     # \n\n → \n → ". " → 공백 순서로 자연스러운 경계를 찾아 자름
     return RecursiveCharacterTextSplitter(
@@ -21,28 +22,55 @@ def make_splitter(settings: Settings) -> RecursiveCharacterTextSplitter:
         separators=["\n\n", "\n", ". ", " ", ""],
     )
 
-# 청크마다 제목을 붙임
+
 def chunk_texts(splitter: RecursiveCharacterTextSplitter, title: str, content: str) -> list[str]:
     """청크마다 제목을 붙여 둡니다. 본문만 있는 청크도 어떤 글인지 검색될 수 있게 하기 위함."""
-    pieces = splitter.split_text(content) if content.strip() else []  # 분문 분할
-    if not pieces:  # 분분이 비어 있는 경우
+    pieces = splitter.split_text(content) if content.strip() else []
+    if not pieces:
         pieces = [""]
     return [f"제목: {title}\n{p}".strip() for p in pieces]
 
-# 검색 결과에서 본문만 추출
+
 def body_of(text: str) -> str:
     """청크 앞의 '제목:' 줄을 뗀 본문 (출처 미리보기용)."""
     lines = text.split("\n", 1)
     return lines[1].strip() if len(lines) > 1 and lines[0].startswith("제목:") else text.strip()
 
-# 글자를 두 갰기 묶기: 실제 임베딩 모델을 사용하는 대인, 문자열을 2-gram으로 변환
+
+def format_context(chunks: list[Chunk]) -> str:
+    """프롬프트에 넣을 근거 목록. LLM 이 [#글번호]로 인용할 수 있게 번호를 붙임."""
+    return "\n\n".join(f"[#{c.board_id}] {c.title} (작성자: {c.author})\n{body_of(c.text)}" for c in chunks)
+
+
 def bigrams(text: str) -> set[str]:
     """글자 2개 묶음. 공백·기호는 빼고 소문자로."""
     s = re.sub(r"[^0-9a-zA-Z가-힣]", "", text.lower())
     return {s[i:i + 2] for i in range(len(s) - 1)} if len(s) > 1 else ({s} if s else set())
 
 
-# RAG 엔진을 대신하는 임시 클래스
+# 질문에서 검색에 도움이 안 되는 말 (스텁 재작성용)
+_STOP = ["하나요", "인가요", "있나요", "되나요", "할까요", "어때", "알려줘", "알려 줘", "궁금해", "뭐야", "언제", "어디", "어떻게", "무엇", "?", "？"]
+
+ANSWER_PROMPT = ChatPromptTemplate.from_messages([
+    ("system",
+     "너는 커뮤니티 게시판 도우미다. 아래 [게시글]에 있는 내용만 근거로 한국어로 짧게 답한다.\n"
+     "- 게시글에 없는 내용은 추측하지 말고 '게시판에서 찾지 못했습니다'라고 답한다.\n"
+     "- 근거로 쓴 문장 끝에 [#글번호]를 붙인다. 예: 매주 목요일에 모입니다 [#1]\n"
+     "- 3문장 이내로 답한다."),
+    ("human", "[게시글]\n{context}\n\n[질문]\n{question}"),
+])
+
+REWRITE_PROMPT = ChatPromptTemplate.from_messages([
+    ("system",
+     "사용자 질문을 게시판 검색에 알맞은 짧은 검색 문장으로 바꾼다. "
+     "핵심 명사와 키워드만 남기고 한 줄로만 출력한다."),
+    ("human", "{question}"),
+])
+
+ABSTAIN_MESSAGE = "게시판에서 관련 내용을 찾지 못했습니다. 질문을 바꾸거나 관련 글을 먼저 올려 주세요."
+
+
+# ───────────────────────── 스텁 엔진 (1~5차시) ─────────────────────────
 class StubEngine:
     """OpenAI·Atlas 없이 동작하는 대역. 2-gram 겹침 비율로 점수를 내고, 메모리에 저장합니다."""
 
@@ -76,6 +104,15 @@ class StubEngine:
         scored.sort(key=lambda c: c.score, reverse=True)
         return scored[:k]
 
+    def generate(self, question, chunks):
+        best = chunks[0]
+        body = body_of(best.text).replace("\n", " ")[:150]
+        return f"'{best.title}' 글에 따르면: {body} [#{best.board_id}]"
 
-def create_engine(settings: Settings):
-    return StubEngine(settings)
+    def rewrite(self, question):
+        q = question
+        for w in _STOP:
+            q = q.replace(w, " ")
+        return " ".join(q.split()) or question
+
+
