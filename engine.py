@@ -120,7 +120,78 @@ class AtlasEngine:
     """OpenAI 임베딩 + MongoDB Atlas Vector Search + ChatOpenAI."""
     name = "atlas"
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings):  # DB, 임베딩, LLM 초기화
         from langchain_mongodb import MongoDBAtlasVectorSearch
         from langchain_openai import ChatOpenAI, OpenAIEmbeddings
         from pymongo import MongoClient
+
+        if not settings.openai_api_key or not settings.mongodb_uri:
+            raise RuntimeError("RAG_ENGINE=atlas 에는 OPENAI_API_KEY 와 MONGODB_URI 가 필요합니다.")
+
+        self.splitter = make_splitter(settings)
+        self.min_score = settings.min_score
+        self.client = MongoClient(settings.mongodb_uri, serverSelectionTimeoutMS=5000)
+        self.collection = self.client[settings.mongodb_db][settings.mongodb_collection]
+
+        # OpenAIEmbeddings 객체 생성, 내부 지역 변수 임
+        embeddings = OpenAIEmbeddings(
+            model=settings.openai_embedding_model,
+            dimensions=settings.embedding_dimensions,
+            api_key=settings.openai_api_key
+        )
+
+        # MongoDBAtlasVectorSearch 객체 생성
+        self.store = MongoDBAtlasVectorSearch(
+            collection=self.collection,             # MongoDB 컬렉션
+            embedding=embeddings,                   # 임베딩 객체
+            index_name=settings.atlas_index_name,   # Atlas 벡터 검색 인덱스 이름
+            text_key="text",                        # 원본 텍스트를 저장할 필드명
+            embedding_key="embedding",              # 임베딩 벡터를 저장할 필드명
+            relevance_score_fn="cosine"             # 유사도 계산 방식
+        )
+        llm = ChatOpenAI(model=settings.openai_chat_model, temperature=0, api_key=settings.openai_api_key)
+        # LangChain Runnable 체인: 프롬프트 → 모델 → 문자열 파서
+        self.answer_chain = ANSWER_PROMPT | llm | StrOutputParser()      # 질문과 검색된 자료를 이용해 답변을 생성하는 체인
+        self.rewrite_chain = REWRITE_PROMPT | llm | StrOutputParser()    # 질문을 LLM을 이용해 다시 작성하는 체인
+
+    def index(self, board_id, title, content, author, email):
+        self.collection.delete_many({"boardId": board_id})  # 수정 시 이전 청크 교체
+        texts = chunk_texts(self.splitter, title, content)
+        metadatas = [
+            {"boardId": board_id, "title": title, "author": author, "owner": email, "chunkNo": i}
+            for i in range(len(texts))
+        ]
+        self.store.add_texts(texts, metadatas=metadatas)
+        return len(texts)
+
+    def delete(self, board_id):
+        return self.collection.delete_many({"boardId": board_id}).deleted_count
+
+    def search(self, query, board_ids, k):
+        if not board_ids:
+            return []
+        results = self.store.similarity_search_with_score(
+            query, k=k, pre_filter={"boardId": {"$in": board_ids}},  # 허용목록 필터 (filter 필드)
+        )
+        return [
+            Chunk(
+                board_id=int(doc.metadata["boardId"]),
+                title=doc.metadata.get("title", ""),
+                author=doc.metadata.get("author", ""),
+                text=doc.page_content,
+                score=round(float(score), 3),
+            )
+            for doc, score in results
+        ]
+
+    def generate(self, question, chunks):
+        return self.answer_chain.invoke({"question": question, "context": format_context(chunks)})
+
+    def rewrite(self, question):
+        return self.rewrite_chain.invoke({"question": question}).strip() or question
+
+def create_engine(settings: Settings):
+    if settings.rag_engine == "atlas":
+        return AtlasEngine(settings)
+    return StubEngine(settings)
+
