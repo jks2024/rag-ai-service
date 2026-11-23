@@ -115,4 +115,12 @@ class StubEngine:
             q = q.replace(w, " ")
         return " ".join(q.split()) or question
 
+# Atlas 엔진
+class AtlasEngine:
+    """OpenAI 임베딩 + MongoDB Atlas Vector Search + ChatOpenAI."""
+    name = "atlas"
 
+    def __init__(self, settings: Settings):
+        from langchain_mongodb import MongoDBAtlasVectorSearch
+        from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+        from pymongo import MongoClient

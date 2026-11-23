@@ -4,3 +4,6 @@ uvicorn[standard]
 pydantic
 pydantic-settings
 langchain-text-splitters
+langchain-mongodb
+langchain-openai
+pymongo
