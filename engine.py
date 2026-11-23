@@ -44,21 +44,38 @@ def bigrams(text: str) -> set[str]:
 
 # RAG 엔진을 대신하는 임시 클래스
 class StubEngine:
+    """OpenAI·Atlas 없이 동작하는 대역. 2-gram 겹침 비율로 점수를 내고, 메모리에 저장합니다."""
+
     name = "stub"
-    min_score = 0.0
 
-    def __init__(self, settings):  # 생성자
-        self.store = {}
+    def __init__(self, settings: Settings):
+        self.splitter = make_splitter(settings)
+        self.min_score = settings.stub_min_score
+        self.store: dict[int, list[Chunk]] = {}     # board_id → 청크들 (재시작하면 사라짐)
 
-    # 게시글 저장
     def index(self, board_id, title, content, author, email):
-        self.store[board_id] = [content]
-        return 1
+        texts = chunk_texts(self.splitter, title, content)
+        self.store[board_id] = [Chunk(board_id, title, author, t) for t in texts]   # 수정 시 통째로 교체
+        return len(texts)
 
-    # 게시글 삭제
     def delete(self, board_id):
         return len(self.store.pop(board_id, []))
 
-# 엔진 생성 함수
-def create_engine(settings):
+    def search(self, query, board_ids, k):
+        q = bigrams(query)
+        if not q:
+            return []
+        allowed = set(board_ids)
+        scored = []
+        for bid, chunks in self.store.items():
+            if bid not in allowed:          # 허용목록 밖은 아예 보지 않음
+                continue
+            for c in chunks:
+                score = len(q & bigrams(c.text)) / len(q)
+                scored.append(Chunk(c.board_id, c.title, c.author, c.text, round(score, 3)))
+        scored.sort(key=lambda c: c.score, reverse=True)
+        return scored[:k]
+
+
+def create_engine(settings: Settings):
     return StubEngine(settings)
