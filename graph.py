@@ -52,3 +52,21 @@ def build_graph(engine, settings: Settings):  # 타입 힌트
     def generate(state: RagState) -> dict:
         return {"answer": engine.generate(state["question"], state["chunks"]),
                 "abstained": False, "trace": ["generate"]}
+
+    # 답변 보류
+    def abstain(state: RagState) -> dict:
+        return {"answer": ABSTAIN_MESSAGE, "abstained": True, "chunks": [], "trace": ["abstain"]}
+
+    # 출처 정리
+    def format_(state: RagState) -> dict:
+        # 같은 글의 여러 청크는 점수가 가장 높은 것 하나만 출처로 보여 줌
+        best: dict[int, Chunk] = {}
+        for c in state.get("chunks", []):
+            if c.board_id not in best or c.score > best[c.board_id].score:
+                best[c.board_id] = c
+        sources = [
+            {"board_id": c.board_id, "title": c.title, "author": c.author,
+             "snippet": body_of(c.text)[:120], "score": c.score}
+            for c in sorted(best.values(), key=lambda c: c.score, reverse=True)
+        ]
+        return {"sources": sources, "trace": ["format"]}
