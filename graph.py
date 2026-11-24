@@ -103,3 +103,15 @@ def build_graph(engine, settings: Settings):  # 타입 힌트
     g.add_edge("abstain", "format")
     g.add_edge("format", END)
     return g.compile()  # 정의한 그래프를 실행 가능한 형태로 컴파일 후 반환
+
+# 그래프 실행
+def run_graph(graph, question: str, board_ids: list[int], top_k: int) -> dict:
+    # 초시 상태를 전달받아 그래프를 실행하고, 최종 상태를 반환
+    return graph.invoke({
+        "question": question,
+        "query": question,
+        "board_ids": board_ids,
+        "top_k": top_k,
+        "attempts": 0,
+        "trace": [],
+    })
